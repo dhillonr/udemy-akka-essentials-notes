@@ -1,7 +1,9 @@
 package part2actors
 
 import akka.actor.{Actor, ActorRef, ActorSystem, Props}
+import part2actors.ActorCapabilities.Counter
 import part2actors.ChangingActorBehaviour.Mom.{Food, MomStart}
+import part2actors.ChangingActorBehaviour.StatelessCounter.{Increment, Decrement, Print}
 
 object ChangingActorBehaviour extends  App {
 
@@ -111,4 +113,95 @@ object ChangingActorBehaviour extends  App {
    * In this implementation of statelessFussyKid it will become more and more sad ,
    * as you keep feeding him with veggies and will become less sad as you feed it chocolate.
    */
+
+  /*
+   * Exercise 1 : Recreate the counter actor with context.become and NO MUTABLE STATES
+   */
+
+  object  StatelessCounter  {
+    case object Decrement
+    case object Increment
+    case object Print
+  }
+
+  class StatelessCounter extends Actor {
+    import StatelessCounter ._
+
+    override def receive: Receive = countReceive(0)
+
+    def countReceive(count: Int): Receive ={
+      case Increment =>
+        println(s" [$count] incrementing ")
+        context.become((countReceive(count +1)))
+      case Decrement =>
+        println(s" [$count] decrementing ")
+        context.become(countReceive(count -1))
+      case Print => println(s"[$self] Count is : $count")
+    }
+  }
+
+  val statelessCounter = system.actorOf(Props[StatelessCounter], "statelessCounter")
+
+  (1 to 5 ).foreach(_ => statelessCounter ! Increment)
+  (1 to 3).foreach(_ => statelessCounter ! Decrement)
+  statelessCounter ! Print
+
+  // To convert a stateful actor to stateless actor by calling the next state ,
+  // instead of holding the state as a member of the actor
+
+  /*
+   * Exercise 2: a simplified voting system
+   */
+  case class Vote(candidate: String)
+  case object VoteStatusRequest
+  case class VoteStatusReply(candidate: Option[String])
+  class Citizen extends Actor {
+    override def receive: Receive = {
+      case Vote(candidate) => context.become(voted(candidate))
+      case VoteStatusRequest => sender() ! VoteStatusReply(None)
+    }
+
+    def voted(votedcandidate: String): Receive = {
+      case VoteStatusRequest => sender() ! VoteStatusReply(Some(votedcandidate))
+    }
+  }
+
+  case class AggregateVotes(candidates: Set[ActorRef]){}
+  class VoteAggregator extends Actor{
+    override def receive: Receive = awaitingCommand
+
+    def awaitingCommand : Receive = {
+      case AggregateVotes(citizens) =>{
+        citizens.foreach(citizenRef => citizenRef ! VoteStatusRequest)
+        context.become(awaitingStatus(citizens, Map()))
+      }
+
+    def awaitingStatus(stillWaiting: Set[ActorRef], currentStats: Map[String, Int]): Receive = {
+      case VoteStatusReply(None) => sender() ! VoteStatusRequest
+      case VoteStatusReply(Some(candidate)) =>
+        val newstillWaiting = stillWaiting - sender()
+        val currentVotesOfCandidate = currentStats.getOrElse(candidate, 0)
+        val newStats = currentStats + (candidate -> (currentVotesOfCandidate + 1))
+        if (newstillWaiting.isEmpty) {
+          println(s"[aggregator] poll  status $newStats")
+        } else {
+          context.become(awaitingStatus(newstillWaiting, newStats))
+        }
+    }
+    }
+  }
+
+  val alice = system.actorOf(Props[Citizen], "alice")
+  val bob = system.actorOf(Props[Citizen], "bob")
+  val charlie = system.actorOf(Props[Citizen], "charlie")
+  val daniel = system.actorOf(Props[Citizen], "daniel")
+
+  val voteAggregator = system.actorOf(Props[VoteAggregator], "voteAggregator")
+
+  alice ! Vote("Martin")
+  bob ! Vote("Jonas")
+  charlie ! Vote("Roland")
+  daniel ! Vote("Roland")
+
+  voteAggregator ! AggregateVotes(Set(alice, bob, charlie, daniel))
 }
